@@ -71,7 +71,7 @@ All three modes share the same underlying model pipeline and service infrastruct
 
 Both models live in `assets/models/` and are loaded at runtime via `tflite_flutter`.
 
-### Detection Model — `best_float32.tflite`
+### Detection Model — `detection_model_float32.tflite`
 
 | Property | Value |
 |---|---|
@@ -147,7 +147,7 @@ lib/
 
 assets/
 └── models/
-    ├── best_float32.tflite                      Detection model
+    ├── detection_model_float32.tflite                      Detection model
     └── ocr_model_float32.tflite                 OCR model
 ```
 
@@ -812,7 +812,7 @@ The minimum required files to run the LPR pipeline in another app:
 services/license_plate_detector_metric_new.dart
 services/model_service_manager.dart
 config/pipeline_config.dart
-assets/models/best_float32.tflite
+assets/models/detection_model_float32.tflite
 assets/models/ocr_model_float32.tflite
 ```
 
