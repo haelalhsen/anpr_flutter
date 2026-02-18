@@ -994,4 +994,4 @@ Additional structural fixes:
 - The `_softReset` path (no detection this frame) now correctly clears both run counters and the position baseline. Previously it only cleared the baseline, wasting one stable-frame slot on the next detection.
 - The capture callback was renamed from `onPlateDetected` → `onReadyToCapture` and the `captureFrame()` async method was eliminated. The `CapturedFrame` is now passed directly in the callback, removing an async gap where the stored frame could be overwritten.
 
-**Model file renamed:** `best_float32.tflite` → `detection_model_float32.tflite` for clarity. Update `PipelineConfig` asset path accordingly.
+**Model files Not included:** The model files are not included in the repo. When supplying your own, name it `detection_model_float32.tflite`, `ocr_model_float32.tflite` and update the asset path in `PipelineConfig` accordingly.
