@@ -1,0 +1,48 @@
+name: anpr_app
+description: A Flutter ANPR application with real-time detection
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # Image handling
+  image_picker: ^1.2.1
+  image: ^4.7.2
+
+  # Camera for real-time detection
+  camera: ^0.11.3
+
+  # File system
+  path_provider: ^2.1.5
+
+  # TFLite for model inference
+  tflite_flutter: ^0.12.1
+
+  # For sound/vibration feedback
+#  flutter_vibrate: ^1.3.0
+#  audioplayers: ^6.1.0
+
+  # For state management (optional, using built-in setState)
+  # provider: ^6.1.2
+  permission_handler: ^11.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.14.1
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/models/
+    - assets/sounds/
