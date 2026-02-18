@@ -23,6 +23,7 @@
 15. [Key Design Decisions & R&D Notes](#15-key-design-decisions--rd-notes)
 16. [Integration Guide for Production Apps](#16-integration-guide-for-production-apps)
 17. [Known Limitations & Future Work](#17-known-limitations--future-work)
+18. [Revision History](#18-revision-history)
 
 ---
 
@@ -147,7 +148,7 @@ lib/
 
 assets/
 └── models/
-    ├── detection_model_float32.tflite                      Detection model
+    ├── detection_model_float32.tflite           Detection model
     └── ocr_model_float32.tflite                 OCR model
 ```
 
@@ -366,12 +367,7 @@ enum ScanPhase {
 
 ### DetectionOnlyProcessor
 
-A lightweight version of `CameraFrameProcessor` designed specifically for the scanning phase:
-
-- Calls `detector.recognizePlate(image)` in full but **only reads `result.plateBox`** — OCR output is discarded. This avoids duplicating detection logic while skipping the overhead of rendering OCR results on every live frame.
-- Uses a **higher confidence threshold** (0.65 vs 0.40–0.50) to reduce false-positive captures on blurry or partial frames.
-- Stores the last qualifying `img.Image` + `DetectionBox` internally.
-- `captureFrame()` stops the stream and returns the stored `CapturedFrame`.
+The processor runs every live frame through the full detection model but discards OCR output — only `result.plateBox` is read. Before firing the capture callback, every frame must pass through a **multi-gate quality pipeline** implemented by the internal `_StabilityTracker`. A single confident detection is not enough to trigger capture; the plate must be stable across multiple consecutive frames.
 
 ```dart
 class CapturedFrame {
@@ -380,24 +376,60 @@ class CapturedFrame {
 }
 ```
 
-**Why store the converted image?** The frame used for detection is the same frame handed to OCR. This avoids a second YUV→RGB conversion of the same moment in time, and guarantees the OCR receives exactly the image the detection was confident about.
+**Why store the converted image?** The frame used for detection is the same frame handed to OCR. This avoids a second YUV→RGB conversion and guarantees the OCR receives exactly the image that passed all quality gates.
+
+### Quality Gate Pipeline (`CaptureQualityConfig`)
+
+Every processed frame must pass all five gates. Failure on any gate resets the consecutive-frame counter:
+
+| Gate | Parameter | Default | Purpose |
+|---|---|---|---|
+| 1 — Detection present | — | — | No box → reset |
+| 2 — Minimum confidence | `minConfidence` | `0.55` | Weak detections ignored |
+| 3 — Minimum plate size | `minPlateAreaFraction` | `0.005` | Rejects tiny far-away plates |
+| 4 — Centre movement | `maxCentreMoveFraction` | `0.08` | Camera panning / hand shake |
+| 5 — Area change | `maxAreaChangeFraction` | `0.06` | Zoom-in / zoom-out drift |
+| 6 — Consecutive count | `requiredStableFrames` | `3` | Must sustain gates 1–5 for N frames |
+
+When all gates pass for `requiredStableFrames` consecutive frames, `onReadyToCapture` fires with the **highest-confidence frame from the stable run** — not just the triggering frame. This is the key quality guarantee: the best image from the stable window, not a random one.
+
+The `_StabilityTracker` maintains two reset modes:
+- **Soft reset** (no detection this frame) — clears run counters and position baseline entirely
+- **Movement reset** (box moved) — clears run counters but updates the position baseline so the next frame has a valid comparison point
+
+**Callbacks:**
+
+```dart
+// Fires on every processed frame — drives live overlay + stability progress bar
+onFrameResult: (box, imgW, imgH, stableCount, requiredCount) { ... }
+
+// Fires exactly once per scan cycle when all gates pass
+onReadyToCapture: (CapturedFrame frame) { ... }
+```
 
 ### Two-Stage Pipeline
 
 ```
 Stage 1 (scanning phase):
   Live frames → DetectionOnlyProcessor
-    → recognizePlate(downsampled_frame)
-    → read plateBox.confidence only
-    → if confidence ≥ 0.65 → trigger capture
+    → YUV→RGB conversion (isolate)
+    → recognizePlate(frame) — reads plateBox only, discards OCR
+    → _StabilityTracker.feed() — runs all 5 quality gates
+    → if N consecutive frames pass → onReadyToCapture(bestFrame)
 
 Stage 2 (recognizing phase):
   CapturedFrame.fullImage → detector.recognizePlate(fullImage)
-    → full detection + OCR
+    → full detection + OCR on frozen frame
     → LicensePlateResult { fullPlate, code, number, croppedPlate, metrics }
 ```
 
-The second call uses `ResolutionPreset.high` (vs `medium` in real-time) for better OCR accuracy on the frozen frame.
+### Stability Progress UI
+
+The screen surfaces `stableCount` / `requiredCount` to the user via:
+- A **segmented bar** (N segments, one per required frame, filling green as stability builds)
+- A **determinate `CircularProgressIndicator`** during the locking state
+- Guide box border that **interpolates white → green** as `stableCount / requiredCount` increases
+- Three animated hint states: `searching` → `detected` → `locking`
 
 ### FrozenFrameView
 
@@ -627,7 +659,7 @@ All real-time tuning parameters in one place. Key values:
 | `maxProcessingDimension` | `720` | Safety cap on converted image size |
 | `useLookupTables` | `true` | Pre-computed YUV tables vs float math |
 
-**Tuning for production:** Increase `minFrameIntervalMs` (e.g. 200–500) to reduce battery and thermal load for non-critical use cases. Increase `confirmationFrameCount` (e.g. 5) for higher result confidence at the cost of latency. Raise `captureConfidenceThreshold` in `DetectionOnlyProcessor` (e.g. 0.75) for cleaner captures.
+**Tuning for production:** Increase `minFrameIntervalMs` (e.g. 200–500) to reduce battery and thermal load. Increase `confirmationFrameCount` (e.g. 5) for higher result confidence at the cost of latency. For Scan LPN quality gates, see `CaptureQualityConfig` in `detection_only_processor.dart`.
 
 ---
 
@@ -869,8 +901,14 @@ Adjust these values before integrating — the R&D defaults are tuned for explor
 static const int confirmationFrameCount = 5;  // Higher = fewer false positives
 static const int minFrameIntervalMs = 200;    // Lower FPS = less battery drain
 
-// In DetectionOnlyProcessor constructor (scan mode)
-captureConfidenceThreshold: 0.75,             // Higher = cleaner captures only
+// In ScanLpnScreen._startScanning() — CaptureQualityConfig (scan mode)
+const CaptureQualityConfig(
+  minConfidence: 0.65,           // Raise for stricter confidence gate
+  requiredStableFrames: 5,       // More frames = sharper capture, slower trigger
+  maxCentreMoveFraction: 0.06,   // Lower = reject more hand movement
+  maxAreaChangeFraction: 0.04,   // Lower = reject more zoom drift
+  minPlateAreaFraction: 0.01,    // Higher = require plate to be closer
+)
 
 // In LicensePlateDetectorMetricNew (pipeline)
 static const double detConfThreshold = 0.50;  // Raise for fewer false detections
@@ -910,3 +948,50 @@ static const double ocrConfThreshold = 0.25;  // Raise for fewer character error
 - **Confidence calibration:** Run the models against a labeled dataset to tune per-device threshold values.
 - **Camera resolution experiment:** Test `ResolutionPreset.ultraHigh` for the Scan LPN OCR pass vs current `high`.
 - **Model warm-up inference:** Run a single black frame through the model after loading to pre-warm the GPU execution path, reducing first-frame latency.
+
+---
+
+## 18. Revision History
+
+### R&D Session 2 — Scan LPN Quality Gates
+
+**Problem:** Scan LPN was capturing distorted / blurry frames, causing OCR to consistently fail. The original implementation triggered capture on the **first frame** that met the confidence threshold. At 100 ms minimum intervals plus ~400 ms inference time per frame, the effective capture rate was fast enough to catch motion-blurred frames before the camera had settled and auto-focused.
+
+**Root cause analysis:**
+
+Two bugs identified:
+
+**Bug 1 — No frame stability check.** The original `DetectionOnlyProcessor` had a single gate: `confidence ≥ 0.65`. A single confident detection on a motion-blurred frame was sufficient to trigger capture. There was no requirement that the plate be in the same position across multiple frames.
+
+**Bug 2 — Gates were correct but thresholds were miscalibrated.** A second iteration introduced `_StabilityTracker` with movement and area-change gates, but the defaults were tuned too tightly for handheld use:
+
+```
+maxCentreMoveFraction: 0.04  ← 4% of image width
+maxAreaChangeFraction: 0.03  ← 3% of image area
+requiredStableFrames:  4
+```
+
+At ~2–3 effective FPS (100 ms interval + ~400 ms inference), a normal handheld phone drifts 6–10% of image width between processed frames even when held "still". The tracker was resetting on every single frame so `stableCount` never reached 4 — capture never fired.
+
+**Fix applied:**
+
+The quality gate defaults were recalibrated for real handheld conditions:
+
+```dart
+const CaptureQualityConfig(
+  minConfidence: 0.55,           // Slightly lower — gates do the quality work
+  requiredStableFrames: 3,       // ~1.5 s at current effective FPS
+  maxCentreMoveFraction: 0.08,   // 8% — fits normal hand tremor
+  maxAreaChangeFraction: 0.06,   // 6% — allows minor zoom drift
+  minPlateAreaFraction: 0.005,   // Very permissive — rejects only tiny detections
+)
+```
+
+Additional structural fixes:
+
+- `_isProcessing = false` and `_lastEndTime` are now set **before** callbacks fire, preventing a race where a rapid second frame could be gated out while the capture callback was still on the call stack.
+- `_onCaptureReady` in the screen now sets `_phase = ScanPhase.capturing` as its **first** action, making the `_phase != ScanPhase.scanning` guard on subsequent stray callbacks immediately effective.
+- The `_softReset` path (no detection this frame) now correctly clears both run counters and the position baseline. Previously it only cleared the baseline, wasting one stable-frame slot on the next detection.
+- The capture callback was renamed from `onPlateDetected` → `onReadyToCapture` and the `captureFrame()` async method was eliminated. The `CapturedFrame` is now passed directly in the callback, removing an async gap where the stored frame could be overwritten.
+
+**Model file renamed:** `best_float32.tflite` → `detection_model_float32.tflite` for clarity. Update `PipelineConfig` asset path accordingly.
