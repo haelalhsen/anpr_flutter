@@ -31,7 +31,7 @@
 
 The ANPR Scanner app implements a full **License Plate Recognition (LPR)** pipeline on-device using two TFLite neural networks:
 
-- A **YOLOv8 detection model** that locates the plate region in an image.
+- A **YOLOv12 detection model** that locates the plate region in an image.
 - An **OCR model** that reads the characters from the cropped plate region.
 
 The app exposes this pipeline in three distinct usage modes, each designed to explore a different integration pattern:
@@ -76,21 +76,21 @@ Both models live in `assets/models/` and are loaded at runtime via `tflite_flutt
 
 | Property | Value |
 |---|---|
-| Architecture | YOLOv8 |
+| Architecture | YOLOv12 |
 | Input | `[1, 640, 640, 3]` — RGB float32, normalized 0–1 |
 | Output | `[1, 5, 8400]` — center_x, center_y, width, height, confidence |
 | Precision | Float32 |
 | Task | Locate the license plate bounding box in the full image |
 | Confidence threshold | 0.40 (static image), 0.50 (real-time), 0.65 (scan/capture) |
 
-**Output format note:** The model outputs in YOLOv8 transposed format — `[batch, attributes, detections]` — where attributes are `[cx, cy, w, h, class_conf...]`. Values may be normalized (≤ 2.0) or in pixel space; the parser handles both cases.
+**Output format note:** The model outputs in YOLOv12 transposed format — `[batch, attributes, detections]` — where attributes are `[cx, cy, w, h, class_conf...]`. Values may be normalized (≤ 2.0) or in pixel space; the parser handles both cases.
 
 ### OCR Model — `ocr_model_float32.tflite`
 
 | Property | Value |
 |---|---|
 | Input | `[1, 160, 160, 3]` — RGB float32, normalized 0–1 |
-| Output | `[1, 40, N]` — YOLOv8-style character detections |
+| Output | `[1, 40, N]` — YOLOv12-style character detections |
 | Precision | Float32 |
 | Classes | 36 — digits `0–9` and uppercase letters `A–Z` |
 | Task | Detect and classify individual characters on the cropped plate |
@@ -462,7 +462,7 @@ recognizePlate(image)
   ├─ 1. _runDetectionOptimized(image)
   │       → letterbox image to 640×640
   │       → run detection interpreter
-  │       → parse YOLOv8 output
+  │       → parse YOLOv12 output
   │       → NMS (IoU threshold 0.45)
   │       → return List<DetectionBox>
   │
